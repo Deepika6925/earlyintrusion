@@ -1,7 +1,5 @@
 streamlit
 opencv-python-headless
 numpy
-pillow
 ultralytics
-deepface
-mediapipe
+pillow
