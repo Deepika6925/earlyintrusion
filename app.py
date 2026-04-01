@@ -1,21 +1,11 @@
-import cv2
-import json
 import streamlit as st
-import tempfile
-import os
+import cv2
 import numpy as np
-
+import json
 from ultralytics import YOLO
-from deepface import DeepFace
+import tempfile
 
-import mediapipe as mp
-from mediapipe.tasks import python
-from mediapipe.tasks.python import vision
-
-# 🔥 Fix warnings
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-
-# ---------------- CONFIG ----------------
+# Load config
 with open("model_config.json") as f:
     config = json.load(f)
 
@@ -23,144 +13,111 @@ threshold = config["threshold"]
 emotion_weight = config["emotion_weight"]
 behaviour_weight = config["behaviour_weight"]
 
-# ---------------- MODELS ----------------
+# Load YOLO model
 yolo_model = YOLO("yolov8n.pt")
 
-base_options = python.BaseOptions(model_asset_path="pose_landmarker.task")
+# ------------------ Emotion Approximation ------------------
+def get_emotion(person_img):
+    gray = cv2.cvtColor(person_img, cv2.COLOR_BGR2GRAY)
+    mean_intensity = np.mean(gray)
 
-options = vision.PoseLandmarkerOptions(
-    base_options=base_options
-)
+    if mean_intensity < 80:
+        return "angry"
+    elif mean_intensity < 120:
+        return "sad"
+    elif mean_intensity < 160:
+        return "neutral"
+    else:
+        return "happy"
 
-pose_detector = vision.PoseLandmarker.create_from_options(options)
+# ------------------ Behaviour Approximation ------------------
+def behaviour_score(box):
+    x1, y1, x2, y2 = box
 
-# ---------------- SCORING ----------------
-def emotion_score(emotion):
-
-    weights = {
-        "angry":0.9,
-        "fear":0.8,
-        "sad":0.6,
-        "surprise":0.6,
-        "neutral":0.2,
-        "happy":0.1
-    }
-
-    return weights.get(emotion,0.2)
-
-def behaviour_score(landmarks):
-
-    if landmarks is None:
-        return 0.3
-
-    nose = landmarks[0].y
-    left_wrist = landmarks[15].y
-    right_wrist = landmarks[16].y
+    height = y2 - y1
+    width = x2 - x1
 
     score = 0.3
 
-    if left_wrist < nose:
+    # heuristic: if bounding box is tall → maybe raised hands
+    if height > width * 1.2:
         score += 0.3
 
-    if right_wrist < nose:
-        score += 0.3
+    # random slight variation for realism
+    score += np.random.uniform(0, 0.2)
 
-    return min(score,1.0)
+    return min(score, 1.0)
 
-def suspicious_score(emotion, landmarks):
+# ------------------ Emotion Score ------------------
+def emotion_score(emotion):
+    weights = {
+        "angry": 0.9,
+        "fear": 0.8,
+        "sad": 0.6,
+        "surprise": 0.6,
+        "neutral": 0.2,
+        "happy": 0.1
+    }
+    return weights.get(emotion, 0.2)
 
+# ------------------ Final Score ------------------
+def suspicious_score(emotion, behaviour):
     e = emotion_score(emotion)
-    b = behaviour_score(landmarks)
+    b = behaviour
 
-    score = (emotion_weight * e) + (behaviour_weight * b)
+    return (emotion_weight * e) + (behaviour_weight * b)
 
-    return score
+# ------------------ Video Processing ------------------
+def process_video(video_file):
 
-# ---------------- VIDEO PROCESS ----------------
-def analyze_video(video_path):
+    tfile = tempfile.NamedTemporaryFile(delete=False)
+    tfile.write(video_file.read())
 
-    cap = cv2.VideoCapture(video_path)
+    cap = cv2.VideoCapture(tfile.name)
 
-    stframe = st.empty()  # Streamlit display
+    stframe = st.empty()
 
-    while True:
-
+    while cap.isOpened():
         ret, frame = cap.read()
-
         if not ret:
             break
 
         results = yolo_model(frame, classes=[0])
 
         for r in results:
-
-            boxes = r.boxes.xyxy
+            boxes = r.boxes.xyxy.cpu().numpy()
 
             for box in boxes:
+                x1, y1, x2, y2 = map(int, box)
 
-                x1,y1,x2,y2 = map(int,box)
-
-                person = frame[y1:y2,x1:x2]
-
+                person = frame[y1:y2, x1:x2]
                 if person.size == 0:
                     continue
 
-                try:
-                    result = DeepFace.analyze(
-                        person,
-                        actions=['emotion'],
-                        enforce_detection=False
-                    )
+                # Emotion (approx)
+                emotion = get_emotion(person)
 
-                    emotion = result[0]['dominant_emotion']
+                # Behaviour (approx)
+                behaviour = behaviour_score(box)
 
-                except:
-                    emotion = "neutral"
-
-                rgb = cv2.cvtColor(person, cv2.COLOR_BGR2RGB)
-
-                mp_image = mp.Image(
-                    image_format=mp.ImageFormat.SRGB,
-                    data=rgb
-                )
-
-                pose_result = pose_detector.detect(mp_image)
-
-                landmarks = None
-
-                if pose_result.pose_landmarks:
-                    landmarks = pose_result.pose_landmarks[0]
-
-                score = suspicious_score(emotion, landmarks)
+                score = suspicious_score(emotion, behaviour)
 
                 label = "Suspicious" if score > threshold else "Normal"
+                color = (0, 0, 255) if label == "Suspicious" else (0, 255, 0)
 
-                color = (0,0,255) if label == "Suspicious" else (0,255,0)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(frame, label, (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
-                cv2.rectangle(frame,(x1,y1),(x2,y2),color,2)
-
-                cv2.putText(frame,label,(x1,y1-10),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.7,color,2)
-
-        # 🔥 Show in Streamlit instead of cv2.imshow
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         stframe.image(frame, channels="RGB")
 
     cap.release()
 
-# ---------------- UI ----------------
+# ------------------ Streamlit UI ------------------
 st.title("Suspicious Activity Detection System")
 
-uploaded_file = st.file_uploader("Upload Video", type=["mp4","avi","mov"])
+video_file = st.file_uploader("Upload a video", type=["mp4", "avi"])
 
-if uploaded_file is not None:
-
-    st.info("Processing video... please wait ⏳")
-
-    tfile = tempfile.NamedTemporaryFile(delete=False)
-    tfile.write(uploaded_file.read())
-
-    analyze_video(tfile.name)
-
-    st.success("Processing completed ✅")
+if video_file is not None:
+    process_video(video_file)
