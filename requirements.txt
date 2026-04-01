@@ -1,0 +1,8 @@
+gradio
+opencv-python
+mediapipe
+ultralytics
+deepface
+numpy
+tensorflow
+tf-keras
