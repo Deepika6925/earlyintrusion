@@ -9,24 +9,25 @@ import numpy as np
 from ultralytics import YOLO
 from deepface import DeepFace
 
-import mediapipe as mp
-from mediapipe.tasks import python
+# MediaPipe Tasks
 from mediapipe.tasks.python import vision
+from mediapipe.tasks.python import python
 
 # ---------------- CONFIG ---------------- #
 with open("model_config.json") as f:
     config = json.load(f)
 
-threshold = config["threshold"]
-emotion_weight = config["emotion_weight"]
-behaviour_weight = config["behaviour_weight"]
+threshold = config.get("threshold", 0.5)
+emotion_weight = config.get("emotion_weight", 0.6)
+behaviour_weight = config.get("behaviour_weight", 0.4)
 
 # ---------------- MODELS ---------------- #
 yolo_model = YOLO("yolov8n.pt")
 
+# MediaPipe Pose Detector (Tasks API)
 base_options = python.BaseOptions(model_asset_path="pose_landmarker.task")
-options = vision.PoseLandmarkerOptions(base_options=base_options)
-pose_detector = vision.PoseLandmarker.create_from_options(options)
+pose_options = vision.PoseLandmarkerOptions(base_options=base_options)
+pose_detector = vision.PoseLandmarker.create_from_options(pose_options)
 
 # ---------------- LOGIC ---------------- #
 def emotion_score(emotion):
@@ -44,18 +45,20 @@ def behaviour_score(landmarks):
     if landmarks is None:
         return 0.3
 
-    nose = landmarks[0].y
-    left_wrist = landmarks[15].y
-    right_wrist = landmarks[16].y
+    try:
+        nose = landmarks[0].y
+        left_wrist = landmarks[15].y
+        right_wrist = landmarks[16].y
 
-    score = 0.3
+        score = 0.3
+        if left_wrist < nose:
+            score += 0.3
+        if right_wrist < nose:
+            score += 0.3
 
-    if left_wrist < nose:
-        score += 0.3
-    if right_wrist < nose:
-        score += 0.3
-
-    return min(score, 1.0)
+        return min(score, 1.0)
+    except:
+        return 0.3
 
 def suspicious_score(emotion, landmarks):
     e = emotion_score(emotion)
@@ -63,9 +66,9 @@ def suspicious_score(emotion, landmarks):
     return (emotion_weight * e) + (behaviour_weight * b)
 
 # ---------------- MAIN ---------------- #
-def analyze_video(video):
+def analyze_video(video_path):
 
-    cap = cv2.VideoCapture(video)
+    cap = cv2.VideoCapture(video_path)
     frame_count = 0
     output_frame = None
 
@@ -79,7 +82,6 @@ def analyze_video(video):
             continue
 
         frame = cv2.resize(frame, (640, 480))
-
         results = yolo_model(frame, classes=[0])
 
         for r in results:
@@ -101,14 +103,9 @@ def analyze_video(video):
                 except:
                     emotion = "neutral"
 
-                # Pose (Tasks API)
+                # Pose Detection
                 rgb = cv2.cvtColor(person, cv2.COLOR_BGR2RGB)
-
-                mp_image = mp.Image(
-                    image_format=mp.ImageFormat.SRGB,
-                    data=rgb
-                )
-
+                mp_image = vision.Image(image_format=vision.ImageFormat.SRGB, data=rgb)
                 pose_result = pose_detector.detect(mp_image)
 
                 landmarks = None
@@ -117,7 +114,6 @@ def analyze_video(video):
 
                 score = suspicious_score(emotion, landmarks)
                 label = "Suspicious" if score > threshold else "Normal"
-
                 color = (0, 0, 255) if label == "Suspicious" else (0, 255, 0)
 
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
@@ -136,11 +132,17 @@ def analyze_video(video):
     return output_frame
 
 # ---------------- UI ---------------- #
-iface = gr.Interface(
-    fn=analyze_video,
-    inputs=gr.Video(),
-    outputs="image",
-    title="Suspicious Activity Detection System"
-)
+def launch_gradio():
+    iface = gr.Interface(
+        fn=analyze_video,
+        inputs=gr.Video(label="Upload Video"),
+        outputs=gr.Image(label="Processed Frame"),
+        title="Suspicious Activity Detection"
+    )
 
-iface.launch(server_name="0.0.0.0", server_port=10000)
+    # Render requires dynamic port
+    port = int(os.environ.get("PORT", 8080))
+    iface.launch(server_name="0.0.0.0", server_port=port)
+
+if __name__ == "__main__":
+    launch_gradio()
