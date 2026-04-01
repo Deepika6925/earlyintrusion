@@ -1,8 +1,10 @@
-gradio
 opencv-python
-mediapipe
+opencv-contrib-python
 ultralytics
 deepface
-numpy
+mediapipe
 tensorflow
-tf-keras
+torch
+torchvision
+gradio==6.10.0
+numpy
