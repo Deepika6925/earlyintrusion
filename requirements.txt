@@ -1,9 +1,7 @@
-gradio>=6.10
-fastapi>=0.85
-uvicorn>=0.22
-ultralytics>=8.4.33
-mediapipe>=0.10
-deepface>=0.0.99
-opencv-python
-opencv-contrib-python
+streamlit
+opencv-python-headless
+deepface
+mediapipe
+ultralytics
 numpy
+Pillow
